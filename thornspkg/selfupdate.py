@@ -81,7 +81,7 @@ class SelfUpdateError(Exception):
 # Default: owner/repo no GitHub. Pode ser sobrescrito via:
 #   - Variável de ambiente THORN_SELFUPDATE_REPO="owner/repo"
 #   - Flag --repo owner/repo no CLI
-DEFAULT_GITHUB_REPO = "thornspkg/thornspkg"
+DEFAULT_GITHUB_REPO = "fuyu3/thornspkg"
 
 
 def get_github_repo(override: str | None = None) -> str:
