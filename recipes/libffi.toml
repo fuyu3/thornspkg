@@ -1,0 +1,9 @@
+name        = "libffi"
+version     = "3.4.6"
+description = "Foreign Function Interface portável"
+depends     = []
+source      = "https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz"
+# sha256 = "preencha com: sha256sum libffi-3.4.6.tar.gz"
+build_system   = "autotools"
+configure_args = ["--disable-static", "--with-gcc-arch=native"]
+post_install   = ["ldconfig"]

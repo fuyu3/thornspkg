@@ -1,0 +1,23 @@
+[project]
+name = "thornspkg"
+version = "0.4.3"
+description = "Gerenciador de pacotes source-based com resolução de dependências para LFS/BLFS"
+requires-python = ">=3.9"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "tomli; python_version < '3.11'",
+]
+
+[project.scripts]
+thorn = "thornspkg.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["thornspkg*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+name        = "sqlite"
+version     = "3.46.0"
+description = "Banco de dados SQL embutido, sem servidor"
+depends     = []
+source      = "https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz"
+# sha256 = "preencha com: sha256sum sqlite-autoconf-3460000.tar.gz"
+build_system   = "autotools"
+configure_args = ["--enable-fts5", "CPPFLAGS=-DSQLITE_ENABLE_FTS3=1"]

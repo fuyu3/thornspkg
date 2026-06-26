@@ -1,0 +1,13 @@
+name        = "bash"
+version     = "5.2.21"
+description = "GNU Bourne-Again Shell"
+provides    = ["sh"]
+depends     = ["readline", "ncurses"]
+source      = "https://ftp.gnu.org/gnu/bash/bash-5.2.21.tar.gz"
+# sha256 = "preencha com: sha256sum bash-5.2.21.tar.gz"
+build_system   = "autotools"
+configure_args = ["--without-bash-malloc", "--with-installed-readline"]
+install_steps  = [
+    "make install",
+    "ln -sfv bash $DESTDIR/usr/bin/sh",
+]

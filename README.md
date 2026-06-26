@@ -1,0 +1,1147 @@
+# thornspkg · `thorn`
+
+Gerenciador de pacotes **source-based** para [Linux From Scratch](https://www.linuxfromscratch.org/) e BLFS. Compila do zero, resolve dependências automaticamente e rastreia cada arquivo instalado para remoção limpa posterior. Suporta também **pacotes binários** e **receitas remotas** via repositórios. Sem dependências externas em Python ≥ 3.11.
+
+```
+$ thorn deps python
+Ordem de build/instalação:
+    1.  zlib       1.3.1    [pendente]
+    2.  bzip2      1.0.8    [pendente]
+    ...
+    9.  python     3.12.4   [pendente]
+
+$ thorn tree git
+git 2.45.2
+├── zlib 1.3.1
+├── openssl 3.3.1
+│   └── zlib 1.3.1 [já listado]
+└── curl 8.8.0
+    ├── zlib 1.3.1 [já listado]
+    └── openssl 3.3.1 [já listado]
+
+$ thorn install vim
+[1/1] ==> vim-9.1 (binário)
+  ↓  https://repo.exemplo.org/packages/vim-9.1-x86_64.tar.zst
+  ✓  checksum OK
+  →  /
+  ✓  156 arquivos instalados (binário)
+```
+
+---
+
+## Funcionalidades
+
+| Recurso | Descrição |
+|---------|-----------|
+| Resolução de deps | Ordenação topológica (DFS) com detecção de ciclo e caminho exato |
+| `provides` | Pacotes virtuais: `bash provides ["sh"]` |
+| `optional_deps` | Incluídas só se já estiverem instaladas |
+| `reason` | Distingue pacotes explícitos de dependências automáticas |
+| Orphan detection | Remove reporta deps que ficariam sem uso; `autoremove` limpa |
+| Patches | Aplica `.patch` antes do build (`patch -p1`) |
+| `[env]` por pacote | CFLAGS, LDFLAGS, etc. específicos por receita |
+| Hooks por receita | `pre_build`, `post_install`, `pre_remove`, `post_remove` |
+| **Hooks globais** | Scripts em `hooks/<fase>.d/`, executados em ordem lexicográfica |
+| DESTDIR staging | Instalação isolada → cópia rastreada → remoção limpa |
+| sha256 por arquivo | `thorn check` verifica integridade de cada arquivo instalado |
+| **Transações atômicas** | `--atomic`: só grava o DB se tudo funcionar; rollback em falha |
+| **Journal de crash** | `transaction.json` em disco; `thorn recover-tx` desfaz |
+| **suggest-deps** | Analisa configure.ac / meson.build / CMakeLists.txt e sugere deps |
+| **orphan-files** | Lista arquivos no root não pertencentes a nenhum pacote |
+| Atômico no DB | `save_db` usa rename — sem corrupção de JSON em queda de energia |
+| **Repositórios remotos** | Índices JSON com pacotes binários e receitas remotas |
+| **Pacotes binários** | Download direto de tarballs pré-compilados com verificação SHA256 |
+| **Receitas remotas** | Baixa receita do repositório, verifica SHA256 e compila localmente |
+| **Verificação SHA256 em 3 camadas** | Source tarballs, pacotes binários e arquivos de receita |
+| **Lock de instância** | `fcntl.flock()` impede múltiplas instâncias simultâneas |
+| **Extração segura** | Rejeita path traversal, caminhos absolutos e symlinks perigosos |
+| **Download centralizado** | curl preferencial com retries, urllib como fallback |
+| **Interface GPG** | Placeholder para verificação de assinaturas futura |
+| **Dependências com versão** | Operadores `>`, `>=`, `<`, `<=`, `=`, `!=` em `depends` (v0.4+) |
+| **Comparador de versões** | Parser robusto: epoch, pré-release (rc/beta/alpha), sufixos de release |
+| **Conflito de arquivos** | `FileConflictError` bloqueia overwrite de arquivos de outros pacotes |
+| **`thorn owns` / `thorn files`** | Consulta ownership e lista arquivos por pacote |
+| **Metadados expandidos** | `build_date`, `install_date`, `install_size`, `license`, `homepage`, `maintainer`, `repository`, `architecture`, `description`, `download_size` |
+| **`thorn info`** | Exibe metadados completos de qualquer pacote |
+| **Migração automática de DB** | Campos novos são preenchidos com defaults seguros em bancos antigos |
+| **`thorn sync`** | Atualiza índices dos repositórios (alias curto para `repo refresh`) |
+| **`thorn upgrade`** | Atualiza todos os pacotes (ou apenas um) com resolução de deps |
+| **`thorn list-upgrades`** | Lista atualizações disponíveis sem instalar |
+| **Cache persistente** | `/var/cache/thornspkg/{sources,packages,indexes}/` com verificação por checksum |
+| **`thorn cache stats/clean/list`** | Gerencia o cache de downloads |
+| **`thorn self-update`** | Atualiza o próprio thornspkg do GitHub Releases (autônomo, sem depender do DB) |
+| **`thorn version --check`** | Verifica se há versão mais recente disponível no GitHub |
+| **Limpeza de arquivos obsoletos** | Upgrade remove automaticamente arquivos do manifest antigo que não estão no novo |
+
+---
+
+## Instalação
+
+```sh
+git clone <repo> && cd thornspkg
+pip install --break-system-packages -e .
+```
+
+Sem pip:
+```sh
+python3 -m thornspkg <comando> [args]
+```
+
+Python ≥ 3.11: sem dependências externas (`tomllib` embutido, `urllib` na stdlib).
+Python 3.9–3.10: precisa de `tomli` (`pip install tomli`).
+
+**Dependências do sistema (opcionais):**
+- `curl` — download mais robusto com retries e timeout; se ausente, urllib é usado automaticamente
+- `patch` — necessário apenas para receitas com o campo `patches`
+
+---
+
+## Tutorial
+
+### 1. Configuração inicial
+
+Após instalar o thornspkg, crie os diretórios de configuração e adicione seus repositórios:
+
+```sh
+# Diretórios são criados automaticamente, mas você pode preparar as receitas:
+sudo mkdir -p /etc/thornspkg/recipes
+sudo mkdir -p /etc/thornspkg/patches
+
+# Adicione um repositório remoto (opcional)
+sudo thorn repo add blfs https://repo.exemplo.org/blfs/
+
+# Baixe o índice do repositório
+sudo thorn repo refresh
+```
+
+### 2. Primeira receita local
+
+Crie um arquivo `/etc/thornspkg/recipes/zlib.toml`:
+
+```toml
+name = "zlib"
+version = "1.3.1"
+description = "Biblioteca de compressão"
+depends = []
+source = "https://zlib.net/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+build_system = "autotools"
+```
+
+### 3. Verificando dependências antes de instalar
+
+Sempre verifique a ordem de build e a árvore de dependências antes de instalar:
+
+```sh
+# Ver a ordem linear de instalação
+thorn deps vim
+
+# Ver a árvore hierárquica de dependências
+thorn tree vim
+```
+
+### 4. Instalando pacotes
+
+```sh
+# Instalar a partir da receita local (compilação)
+sudo thorn install zlib
+
+# Instalar preferindo binários do repositório (padrão)
+sudo thorn install vim
+
+# Forçar compilação mesmo se houver binário disponível
+sudo thorn install vim --prefer-source
+
+# Instalar vários pacotes atomicamente (reverte tudo se um falhar)
+sudo thorn install firefox thunderbird --atomic
+
+# Simular a instalação sem executar
+thorn install vim --dry-run
+```
+
+### 5. Gerenciando pacotes instalados
+
+```sh
+# Listar todos os pacotes instalados
+thorn list
+
+# Ver detalhes de um pacote (receita, repositório, status)
+thorn info vim
+
+# Buscar pacotes por nome ou descrição (locais e remotos)
+thorn search python
+
+# Ver quais arquivos um pacote instalou
+thorn files vim
+
+# Descobrir qual pacote possui um arquivo
+thorn owns /usr/bin/vim
+
+# Verificar integridade dos arquivos instalados
+sudo thorn check
+
+# Ver quais pacotes estão desatualizados
+thorn outdated
+```
+
+### 6. Removendo pacotes
+
+```sh
+# Remover um pacote (avisa sobre dependências órfãs)
+sudo thorn remove vim
+
+# Forçar remoção mesmo se outros dependem dele
+sudo thorn remove vim --force
+
+# Limpar todas as dependências órfãs
+sudo thorn autoremove
+
+# Limpar sem confirmação interativa
+sudo thorn autoremove --yes
+```
+
+### 7. Recuperação de desastre
+
+Se uma instalação atômica for interrompida (crash de energia, sinal KILL):
+
+```sh
+# Verificar se há uma transação pendente
+sudo thorn recover-tx
+
+# Recuperar sem confirmação
+sudo thorn recover-tx --yes
+```
+
+### 8. Análise e manutenção avançada
+
+```sh
+# Sugere dependências analisando o source do pacote
+thorn suggest-deps networkmanager
+
+# Lista arquivos no sistema que não pertencem a nenhum pacote
+sudo thorn orphan-files
+
+# Excluir diretórios específicos da análise
+sudo thorn orphan-files --exclude home --exclude opt
+
+# Ver o log de build de um pacote
+thorn log vim
+thorn log vim --tail 50
+
+# Baixar sources sem compilar (útil para download offline)
+thorn fetch vim
+```
+
+### 9. Gerenciando repositórios
+
+```sh
+# Adicionar um repositório
+sudo thorn repo add blfs https://repo.exemplo.org/blfs/
+
+# Listar repositórios configurados
+thorn repo list
+
+# Atualizar índices de todos os repositórios
+sudo thorn repo refresh
+
+# Remover um repositório
+sudo thorn repo remove blfs
+```
+
+---
+
+## Receitas (`.toml`)
+
+Cada pacote é um arquivo `.toml` em `--recipes-dir`.
+
+### Campos completos
+
+| campo | tipo | obrig. | descrição |
+|-------|------|:------:|-----------|
+| `name` | string | ✓ | nome canônico |
+| `version` | string | ✓ | versão |
+| `description` | string | | uma linha |
+| `depends` | lista | | deps obrigatórias (suporta operadores de versão, v0.4+) |
+| `optional_deps` | lista | | instaladas só se já presentes |
+| `provides` | lista | | nomes virtuais satisfeitos por este pacote |
+| `source` | string | | URL ou caminho local do tarball |
+| `sources` | lista | | múltiplos tarballs |
+| `sha256` | string/lista | | checksum(s) dos sources |
+| `patches` | lista | | patches em `<patches-dir>/<name>/` |
+| `build_system` | string | | `autotools`(def) \| `make` \| `cmake` \| `meson` \| `custom` |
+| `configure_args` | lista | | args extras (sem `--prefix`, já adicionado) |
+| `prefix` | string | | sobrescreve `--prefix` global só para este pacote |
+| `[env]` | tabela | | variáveis de ambiente adicionais ao build |
+| `pre_build` | lista | | comandos antes do build (ex: `autoreconf -fi`) |
+| `steps` | lista | | steps de build; se presente, ignora `build_system` |
+| `install_steps` | lista | | steps de install; default `["make install"]` |
+| `post_install` | lista | | hooks após instalar no root (ex: `ldconfig`) |
+| `pre_remove` | lista | | hooks antes de remover arquivos |
+| `post_remove` | lista | | hooks após remover arquivos |
+| `homepage` | string | | URL do site do projeto (v0.4+) |
+| `license` | string | | licença (ex: `MIT`, `GPL-3.0-or-later`, `Vim`) (v0.4+) |
+| `maintainer` | string | | nome/email do mantenedor da receita (v0.4+) |
+| `repository` | string | | nome do repositório de origem (v0.4+) |
+| `architecture` | string | | arquitetura alvo (`x86_64`, `aarch64`, `any`) (v0.4+) |
+| `build_date` | string | | data de build do binário (ISO 8601) (v0.4+) |
+| `install_size` | int | | tamanho instalado em bytes (v0.4+) |
+| `download_size` | int | | tamanho do download em bytes (v0.4+) |
+
+### Exemplos
+
+**Autotools simples:**
+```toml
+name = "zlib"
+version = "1.3.1"
+depends = []
+source = "https://zlib.net/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+build_system = "autotools"
+```
+
+**Custom (openssl usa `Configure` com C maiúsculo):**
+```toml
+name = "openssl"
+version = "3.3.1"
+depends = ["zlib"]
+build_system = "custom"
+steps = [
+    "./Configure --prefix=/usr --openssldir=/etc/ssl shared zlib-dynamic",
+    "make",
+]
+install_steps = ["make DESTDIR=$DESTDIR MANSUFFIX=ssl install"]
+post_install  = ["ldconfig"]
+```
+
+**Com patches, env e provides:**
+```toml
+name     = "bash"
+version  = "5.2.21"
+provides = ["sh"]
+depends  = ["readline", "ncurses"]
+patches  = ["bash52-001.patch"]
+build_system   = "autotools"
+configure_args = ["--without-bash-malloc"]
+install_steps  = ["make install", "ln -sfv bash $DESTDIR/usr/bin/sh"]
+
+[env]
+CFLAGS = "-O2 -pipe"
+```
+
+**Com metadados completos (v0.4+):**
+```toml
+name        = "vim"
+version     = "9.1"
+description = "Vi Improved"
+homepage    = "https://www.vim.org/"
+license     = "Vim"
+maintainer  = "dev@example.com"
+repository  = "core"
+architecture = "x86_64"
+install_size  = 44040192   # ~42 MB
+download_size = 11000000   # ~11 MB
+depends     = ["ncurses"]
+source      = "https://github.com/vim/vim/archive/v9.1.tar.gz"
+build_system = "make"
+```
+
+### Dependências com versão (v0.4+)
+
+O campo `depends` aceita operadores de versão compatíveis com pacman/xbps/apt:
+
+```toml
+depends = [
+    "openssl>=3.0",
+    "python<3.15",
+    "glibc>=2.40",
+    "curl=8.9.1",
+    "bash!=5.0",   # qualquer bash exceto 5.0
+    "zlib",        # sem operador = qualquer versão
+]
+```
+
+Operadores suportados: `>`, `>=`, `<`, `<=`, `=`, `!=` (e `==` como alias de `=`).
+
+O comparador de versões é robusto e aceita formatos comuns:
+
+| Formato | Exemplo | Notas |
+|---------|---------|-------|
+| Simples | `3.12.4` | parte numérica principal |
+| Curto | `9.1` | aceito |
+| Com epoch | `1:5.0` | epoch domina a comparação (estilo dpkg) |
+| Com release | `2.40-1` | sufixo de release é maior que a versão base |
+| Pré-release | `3.5rc1`, `1.0alpha2` | `alpha < beta < pre < rc < release` |
+
+O resolvedor de dependências verifica automaticamente se as versões **instaladas** satisfazem as constraints das receitas. Se uma versão instalada for muito antiga, a instalação é abortada com `VersionConflictError`.
+
+---
+
+## Repositórios Remotos
+
+O thornspkg suporta repositórios remotos que podem fornecer **pacotes binários** (pré-compilados) e **receitas remotas** (baixadas e compiladas localmente). Isso permite que você mantenha um servidor de pacotes central para múltiplas máquinas LFS.
+
+### Configuração
+
+O arquivo de configuração dos repositórios fica em `/etc/thornspkg/repos.json`:
+
+```json
+{
+    "repos": [
+        {"name": "blfs", "url": "https://repo.exemplo.org/blfs/"},
+        {"name": "custom", "url": "https://repo.exemplo.org/custom/"}
+    ]
+}
+```
+
+Os índices baixados são cacheados em `/var/lib/thornspkg/sync/<repo>.json`.
+
+### Formato do índice do repositório
+
+O repositório deve servir um arquivo `index.json` na URL base contendo:
+
+```json
+{
+    "packages": {
+        "vim": {
+            "version": "9.1",
+            "type": "binary",
+            "url": "packages/vim-9.1-x86_64.tar.zst",
+            "sha256": "abc123...",
+            "depends": ["ncurses"]
+        },
+        "gcc": {
+            "version": "14.2",
+            "type": "recipe",
+            "recipe": "recipes/gcc.toml",
+            "sha256": "def456...",
+            "depends": ["glibc", "mpfr"]
+        }
+    }
+}
+```
+
+Campos por tipo de pacote:
+
+| campo | `binary` | `recipe` | descrição |
+|-------|:--------:|:--------:|-----------|
+| `version` | ✓ | ✓ | versão do pacote |
+| `type` | ✓ | ✓ | `"binary"` ou `"recipe"` |
+| `url` | ✓ | | caminho relativo do tarball binário |
+| `sha256` | ✓* | ✓* | checksum do tarball binário OU do arquivo de receita |
+| `recipe` | | ✓ | caminho relativo do arquivo de receita |
+| `depends` | | | lista de dependências |
+
+\* `sha256` é opcional no índice, mas **altamente recomendado** para proteção contra adulteração.
+
+### Estrutura do servidor de repositório
+
+```
+https://repo.exemplo.org/blfs/
+    index.json                              ← índice do repositório
+    packages/
+        vim-9.1-x86_64.tar.zst              ← tarball binário
+        curl-8.8.0-x86_64.tar.zst
+    recipes/
+        gcc.toml                             ← receita remota
+        htop.toml
+```
+
+### Criando um repositório
+
+1. **Crie a estrutura de diretórios** no servidor web:
+
+```sh
+mkdir -p /var/www/repo/{packages,recipes}
+```
+
+2. **Crie pacotes binários** a partir de instalações existentes:
+
+O tarball binário deve conter a estrutura de diretórios final (como um staging DESTDIR). Por exemplo, para criar um pacote do vim:
+
+```sh
+# Após compilar e instalar o vim com DESTDIR:
+cd /var/tmp/thornspkg/build/vim-9.1/_destdir
+tar --zstd -cf /var/www/repo/packages/vim-9.1-x86_64.tar.zst .
+# ou sem zstd:
+tar -czf /var/www/repo/packages/vim-9.1-x86_64.tar.gz .
+```
+
+Calcule o SHA256 para incluir no índice:
+
+```sh
+sha256sum /var/www/repo/packages/vim-9.1-x86_64.tar.zst
+```
+
+3. **Disponibilize receitas** para pacotes que devem ser compilados localmente:
+
+Copie os arquivos `.toml` das receitas para o diretório `recipes/` e calcule o SHA256:
+
+```sh
+cp /etc/thornspkg/recipes/gcc.toml /var/www/repo/recipes/gcc.toml
+sha256sum /var/www/repo/recipes/gcc.toml
+```
+
+4. **Gere o `index.json`**:
+
+```python
+import json
+
+index = {
+    "packages": {
+        "vim": {
+            "version": "9.1",
+            "type": "binary",
+            "url": "packages/vim-9.1-x86_64.tar.zst",
+            "sha256": "<sha256_do_tarball>",
+            "depends": ["ncurses"]
+        },
+        "gcc": {
+            "version": "14.2",
+            "type": "recipe",
+            "recipe": "recipes/gcc.toml",
+            "sha256": "<sha256_da_receita>",
+            "depends": ["glibc", "mpfr"]
+        }
+    }
+}
+
+with open("/var/www/repo/index.json", "w") as f:
+    json.dump(index, f, indent=4)
+```
+
+5. **Sirva via HTTP** (nginx, apache, `python -m http.server`, etc.).
+
+### Prioridade de instalação
+
+Ao rodar `thorn install <pacote>`, o thornspkg segue esta prioridade:
+
+**Padrão (`--prefer-binary`, ativo por padrão):**
+1. Pacote binário do repositório (se disponível)
+2. Receita local (compilação)
+3. Receita do repositório remoto (download + compilação)
+
+**Com `--prefer-source`:**
+1. Receita local (compilação)
+2. Pacote binário do repositório
+3. Receita do repositório remoto
+
+A escolha é indicada na saída com marcadores:
+- `[binário]` — pacote baixado do repositório
+- `[receita remota]` — receita baixada e compilada
+- Sem marcador — receita local
+
+---
+
+## Verificação SHA256 em 3 Camadas
+
+O thornspkg implementa verificação SHA256 em três camadas distintas, protegendo contra adulteração em diferentes pontos do pipeline:
+
+### 1. Source tarballs (receitas locais e remotas)
+
+Quando uma receita define o campo `sha256`, o checksum é verificado após o download do tarball de código-fonte. Isso garante que o código que será compilado é exatamente o esperado.
+
+```toml
+source = "https://example.com/foo-1.0.tar.gz"
+sha256 = "abc123..."
+```
+
+Se o checksum divergir, a compilação é abortada antes de qualquer extração.
+
+### 2. Pacotes binários
+
+Pacotes binários baixados de repositórios têm seu SHA256 verificado contra o valor no índice do repositório. Isso protege contra tarballs corrompidos ou adulterados no servidor ou em trânsito.
+
+```json
+{
+    "type": "binary",
+    "url": "packages/vim-9.1.tar.zst",
+    "sha256": "def456..."
+}
+```
+
+### 3. Arquivos de receita (receitas remotas)
+
+Quando um pacote de repositório é do tipo `recipe`, o arquivo `.toml` é baixado e seu SHA256 é verificado contra o valor no índice. Isso protege contra adulteração do arquivo de receita, que poderia conter comandos maliciosos nos campos `steps`, `post_install`, etc.
+
+```json
+{
+    "type": "recipe",
+    "recipe": "recipes/gcc.toml",
+    "sha256": "789abc..."
+}
+```
+
+---
+
+## Segurança
+
+### Lock de instância
+
+Operações de escrita (`install`, `remove`, `autoremove`, `recover-tx`, `repo`) adquirem automaticamente um **lock exclusivo** via `fcntl.flock()` no arquivo `/var/lib/thornspkg/db.lock`. Isso impede que duas instâncias do thornspkg modifiquem o sistema simultaneamente, o que poderia corromper o banco de dados ou deixar o sistema em estado inconsistente.
+
+Se outra instância estiver rodando:
+```
+erro: Outra instância do thornspkg está em execução.
+  Se isso for um erro, remova manualmente o lock em: /var/lib/thornspkg/db.lock
+```
+
+O lock é liberado automaticamente quando o processo encerra (mesmo por sinal ou crash), pois `flock()` é associado ao file descriptor.
+
+### Extração segura de arquivos
+
+Toda extração de tarballs (source e binário) passa pela função `extract_archive()`, que implementa proteções contra ataques comuns em arquivos tar:
+
+- **Path traversal**: rejeita caminhos contendo `..` (ex: `../../etc/passwd`)
+- **Caminhos absolutos**: rejeita entradas começando com `/`
+- **Symlinks perigosos**: rejeita links simbólicos que apontam para fora do diretório de extração
+- **Hardlinks perigosos**: rejeita hardlinks que apontam para fora do diretório de extração
+
+Entradas rejeitadas são reportadas na saída com `⚠` e a extração continua com as entradas seguras. Isso funciona em todas as versões do Python, sem depender do parâmetro `filter="data"` do tarfile (Python 3.12+).
+
+### Download centralizado
+
+Todo download passa pelo módulo `downloader.py`, que implementa:
+
+- **curl preferencial**: se `curl` estiver disponível no sistema, é usado com retries automáticos (3 tentativas), timeout (120s de conexão, 600s total), e follow redirects
+- **urllib fallback**: se curl não estiver disponível, usa `urllib.request` da stdlib
+- **Download atômico**: escreve em arquivo `.part` e renomeia ao concluir, evitando arquivos corrompidos por downloads interrompidos
+- **Mensagens amigáveis**: traduz códigos de erro do curl (HTTP 404, timeout, DNS) em mensagens claras
+
+### Interface para assinaturas GPG (futuro)
+
+O módulo `signature.py` define a interface para verificação de assinaturas GPG, mas a implementação real é um placeholder. Quando GPG for implementado, basta modificar este módulo sem alterar o restante da arquitetura. As funções disponíveis são:
+
+- `verify_signature(file_path, signature_path, keyring)` — verificará assinaturas via `gpgv`
+- `is_signature_verification_enabled()` — atualmente retorna `False`
+- `download_signature(file_url)` — retorna a URL presumida da assinatura (`.sig` ou `.asc`)
+
+---
+
+## Hooks globais
+
+Scripts executáveis em `<hooks-dir>/<fase>.d/`, chamados em ordem lexicográfica após os hooks de receita.
+
+```
+/etc/thornspkg/hooks/
+    pre-install.d/
+        10-check-disk-space.sh
+    post-install.d/
+        10-ldconfig.sh
+        20-update-desktop-db.sh
+    pre-remove.d/
+    post-remove.d/
+        10-ldconfig.sh
+```
+
+**Códigos de saída:**
+
+| código | comportamento |
+|--------|---------------|
+| `0` | sucesso — continua |
+| `75` | EX_TEMPFAIL — falha ignorável, continua sem erro |
+| outro | erro crítico — aborta a operação |
+
+**Variáveis disponíveis nos scripts:**
+```sh
+THORN_PACKAGE   # nome do pacote
+THORN_VERSION   # versão
+THORN_ROOT      # raiz de instalação
+THORN_PREFIX    # prefixo
+```
+
+Exemplo de hook que nunca bloqueia:
+```sh
+#!/bin/sh
+# Atualiza banco de ícones GTK se disponível, mas não obriga
+gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || exit 75
+```
+
+---
+
+## Instalações atômicas (`--atomic`)
+
+Compila todos os pacotes normalmente (arquivos vão para o root à medida que são instalados — as deps precisam estar presentes para os pacotes seguintes compilarem). O banco de dados só é gravado **depois que todos tiverem sucesso**.
+
+Em caso de falha:
+1. Remove os arquivos instalados nesta sessão (rollback de filesystem)
+2. O banco permanece inalterado
+3. Um `transaction.json` em disco serve de journal para recuperação de crash
+
+```sh
+# Instala firefox e thunderbird; reverte tudo se qualquer um falhar
+sudo thorn install firefox thunderbird --atomic
+
+# Recuperar uma sessão interrompida (crash de energia, sinal KILL, etc.)
+sudo thorn recover-tx
+```
+
+**Limitação:** com `--atomic --reinstall`, o rollback remove os arquivos mas não restaura as versões anteriores que foram sobrescritas. Use com cuidado em pacotes já instalados.
+
+---
+
+## Conflito de arquivos (v0.4+)
+
+Antes de instalar qualquer pacote, o thornspkg verifica se algum arquivo do manifest já pertence a outro pacote. Se sim, a instalação é **bloqueada** com `FileConflictError`:
+
+```
+$ thorn install my-vim
+erro: conflito de arquivos ao instalar 'my-vim':
+  /usr/bin/vim  →  já pertence a 'vim'
+  Use --force-overwrite para sobrescrever (não recomendado).
+```
+
+Para forçar a sobrescrita (use com extrema cautela):
+
+```sh
+sudo thorn install my-vim --force-overwrite
+```
+
+### Consulta de ownership
+
+```sh
+$ thorn owns /usr/bin/vim
+/usr/bin/vim  →  vim 9.1
+
+$ thorn owns /usr/lib/libfoo.so
+/usr/lib/libfoo.so  não pertence a nenhum pacote instalado
+
+$ thorn files vim
+vim: 156 arquivo(s)
+  /usr/bin/vim
+  /usr/bin/ex
+  /usr/bin/view
+  ...
+```
+
+---
+
+## Sistema de atualização (v0.4+)
+
+O thornspkg agora tem um fluxo de atualização completo semelhante a pacman, xbps e apt:
+
+```sh
+# 1. Atualiza índices dos repositórios
+sudo thorn sync
+
+# 2. Lista o que está desatualizado
+thorn list-upgrades
+
+# 3. Atualiza tudo
+sudo thorn upgrade
+
+# Ou atualiza apenas um pacote (e suas deps)
+sudo thorn upgrade curl
+
+# Transação atômica com rollback em caso de erro
+sudo thorn upgrade --atomic
+
+# Simular antes de atualizar
+thorn upgrade --dry-run
+```
+
+Fluxo interno:
+1. Compara versões instaladas vs. disponíveis (receita local ou repositório)
+2. Detecta pacotes desatualizados com comparador robusto de versões
+3. Resolve dependências transitivas
+4. Executa a transação (um a um ou atômica)
+5. Em caso de erro com `--atomic`, faz rollback dos arquivos instalados
+
+---
+
+## Cache persistente (v0.4+)
+
+O thornspkg mantém um cache persistente em `/var/cache/thornspkg/`:
+
+```
+/var/cache/thornspkg/
+├── sources/    — tarballs de código-fonte
+├── packages/   — pacotes binários baixados
+└── indexes/    — índices de repositórios
+```
+
+Antes de baixar qualquer arquivo, o cache é consultado. Se o arquivo existe **E** o checksum SHA256 bate, ele é reaproveitado. Caso contrário, é baixado e armazenado.
+
+### Comandos do cache
+
+```sh
+$ thorn cache stats
+Cache do thornspkg:
+  sources/       12 arquivo(s)   145.3 MB
+  packages/       8 arquivo(s)   98.7 MB
+  indexes/        3 arquivo(s)   12.4 KB
+  ──────────────────────────────────────────────────
+  total          23 arquivo(s)   244.0 MB
+
+$ thorn cache list
+sources/ (12 arquivo(s))
+  openssl-3.3.1.tar.gz          15.2 MB
+  Python-3.12.4.tgz             27.5 MB
+  ...
+
+$ thorn cache clean              # limpa sources/ e packages/ (preserva indexes/)
+$ thorn cache clean --indexes    # limpa também indexes/
+$ thorn cache clean --no-sources # não limpa sources/
+```
+
+---
+
+## Migração automática de banco (v0.4+)
+
+O banco de dados `installed.json` ganhou novos campos opcionais em v0.4+:
+
+- `install_date` (alias de `installed_at`)
+- `build_date`, `install_size`, `download_size`
+- `repository`, `architecture`, `license`, `description`, `homepage`, `maintainer`
+
+Na primeira vez que o thornspkg é executado após upgrade, **todos os pacotes antigos são migrados automaticamente** com valores padrão seguros (`None` ou string vazia). Nenhum dado existente é perdido. A migração é idempotente — pode ser chamada várias vezes sem efeito colateral.
+
+---
+
+## Pacotes explícitos vs automáticos (`reason`)
+
+O campo `reason` no banco distingue o que o usuário pediu explicitamente do que foi instalado como dependência:
+
+```json
+"firefox": { "reason": "explicit", ... }
+"nspr":    { "reason": "dependency", ... }
+```
+
+**Na remoção**, o `thorn remove` detecta quais deps ficariam órfãs e avisa:
+```
+$ thorn remove firefox
+✓ 'firefox' removido (142 arq., 0 ignorados).
+
+  3 dependência(s) ficaram sem uso:
+    nspr  2.0
+    nss   3.101
+    dbus  1.14
+  Execute thorn autoremove para removê-las.
+```
+
+**`thorn autoremove`** remove todas de uma vez (com confirmação):
+```sh
+thorn autoremove          # interativo
+thorn autoremove --yes    # sem confirmar
+```
+
+O algoritmo calcula o fecho transitivo — se remover `A` torna `B` órfão e remover `B` torna `C` órfão, todos aparecem na lista de uma vez.
+
+Pacotes sem campo `reason` (banco de dados antigo) são tratados como `explicit` e nunca removidos automaticamente.
+
+---
+
+## Sugestão de dependências (`suggest-deps`)
+
+Analisa os arquivos de build do source e sugere o que pode estar faltando em `depends`:
+
+```sh
+thorn suggest-deps networkmanager
+```
+
+```
+→ analisando /var/tmp/thornspkg/build/networkmanager-1.46-suggest/ …
+
+Dependências sugeridas (obrigatórias):
+  glib-2.0          de: meson.build
+  libudev           de: meson.build
+  dbus-1            de: configure.ac
+
+Dependências sugeridas (opcionais):
+  bluez             de: meson.build    (required: false)
+  wpa_supplicant    de: configure.ac   (NOT_FOUND action)
+  libsecret-1       de: configure.ac
+
+Nota: sugestões baseadas em análise estática — revise antes de adicionar ao campo 'depends'.
+```
+
+Arquivos analisados: `configure.ac`, `meson.build`, `CMakeLists.txt`, `configure`.
+
+As sugestões **nunca modificam receitas automaticamente**.
+
+O source extraído é cacheado em `<build-dir>/<nome>-<versão>-suggest/` e reutilizado em execuções subsequentes. Use `--keep` para preservar após a análise.
+
+---
+
+## Arquivos órfãos (`orphan-files`)
+
+Lista arquivos no root que não pertencem a nenhum pacote instalado:
+
+```sh
+thorn orphan-files
+```
+
+```
+Percorrendo / …
+3 arquivo(s) órfão(s):
+  /usr/local/bin/meu-script
+  /etc/arquivo-antigo.conf
+  /usr/lib/libantiga.so.1
+
+  3 arquivo(s) listados — nada foi removido.
+```
+
+**Nunca apaga nada.** Apenas reporta.
+
+Exclusões padrão: `proc`, `sys`, `dev`, `run`, `tmp`, `var/tmp`, `var/run`, `lost+found`, além do próprio banco do thorn e dos diretórios de cache/build.
+
+```sh
+# Adicionar exclusões extras
+thorn orphan-files --exclude home --exclude opt --exclude usr/local
+```
+
+---
+
+## Todos os comandos
+
+```sh
+# ── planejamento ─────────────────────────────────────────────────────────
+thorn deps  <pkg...>          # ordem linearizada (sem instalar)
+thorn tree  <pkg...>          # árvore ASCII de dependências
+
+# ── instalação ───────────────────────────────────────────────────────────
+thorn install <pkg...>                    # instala com deps automáticas
+thorn install <pkg...> --reinstall        # força rebuild mesmo instalado
+thorn install <pkg...> --dry-run          # simula, não instala
+thorn install <pkg...> --keep-build       # preserva diretório de build
+thorn install <pkg...> --atomic           # transação: reverte em falha
+thorn install <pkg...> --prefer-binary    # prefere binários (padrão)
+thorn install <pkg...> --prefer-source    # força compilação da receita
+thorn install <pkg...> --force-overwrite  # sobrescreve arquivos de outros pacotes
+thorn fetch   <pkg...>                    # só baixa, não compila
+
+# ── atualização (v0.4+) ──────────────────────────────────────────────────
+thorn sync                                # atualiza índices dos repositórios
+thorn upgrade                             # atualiza todos os pacotes desatualizados
+thorn upgrade <pkg>                       # atualiza apenas um pacote
+thorn upgrade --dry-run                   # simula a atualização
+thorn upgrade --atomic                    # transação atômica com rollback
+thorn upgrade --reinstall                 # reinstala mesmo se já está atualizado
+thorn list-upgrades                       # lista atualizações disponíveis
+
+# ── remoção ──────────────────────────────────────────────────────────────
+thorn remove <pkg>                        # remove; avisa sobre órfãos
+thorn remove <pkg> --force                # remove mesmo com dependentes
+thorn autoremove                          # remove deps órfãs [D]
+thorn autoremove --yes                    # sem confirmação
+
+# ── recuperação ──────────────────────────────────────────────────────────
+thorn recover-tx                          # desfaz transação interrompida
+thorn recover-tx --yes
+
+# ── consulta ─────────────────────────────────────────────────────────────
+thorn list                    # pacotes instalados ([D] = automático)
+thorn info  <pkg>             # receita + repositório + status + reason + metadados
+thorn search <padrão>         # busca por nome/descrição (local + remoto)
+thorn why   <pkg>             # quem depende deste pacote
+thorn files <pkg>             # arquivos instalados por este pacote
+thorn owns  <caminho>         # qual pacote possui este arquivo
+
+# ── manutenção ───────────────────────────────────────────────────────────
+thorn check  [pkg...]         # verifica sha256 (default: todos)
+thorn outdated                # instalado ≠ versão na receita
+thorn log <pkg>               # log de build completo
+thorn log <pkg> --tail 50
+
+# ── análise ──────────────────────────────────────────────────────────────
+thorn suggest-deps <pkg>      # sugere deps analisando o source
+thorn suggest-deps <pkg> --keep   # preserva source extraído
+thorn orphan-files            # arquivos não gerenciados no root
+thorn orphan-files --exclude home --exclude opt
+
+# ── repositórios ─────────────────────────────────────────────────────────
+thorn repo add <nome> <url>   # adiciona repositório remoto
+thorn repo remove <nome>      # remove repositório
+thorn repo list               # lista repositórios configurados
+thorn repo refresh            # atualiza índices de todos os repositórios
+thorn sync                    # alias curto para `repo refresh`
+
+# ── cache (v0.4+) ────────────────────────────────────────────────────────
+thorn cache stats             # mostra uso do cache (arquivos, espaço)
+thorn cache list              # lista arquivos no cache, por categoria
+thorn cache clean             # limpa sources/ e packages/ (preserva indexes/)
+thorn cache clean --indexes              # limpa também indexes/
+thorn cache clean --no-sources           # não limpa sources/
+thorn cache clean --no-packages          # não limpa packages/
+
+# ── self-update (v0.4.3+) ───────────────────────────────────────────────
+thorn version                 # mostra a versão instalada
+thorn version --check         # verifica se há versão mais recente no GitHub
+sudo thorn self-update        # atualiza do GitHub Releases (latest)
+sudo thorn self-update --tag v0.4.3     # instala versão específica
+sudo thorn self-update --repo user/repo # usa outro repositório GitHub
+sudo thorn self-update --url URL        # URL customizada (sobrescreve --repo/--tag)
+sudo thorn self-update --dry-run        # só simula
+sudo thorn self-update --force          # reinstala mesma versão
+sudo thorn self-update --yes            # sem confirmação
+```
+
+---
+
+## Flags globais
+
+```sh
+--recipes-dir  DIR   # THORN_RECIPES    (default: /etc/thornspkg/recipes)
+--patches-dir  DIR   # THORN_PATCHES    (default: /etc/thornspkg/patches)
+--sources-dir  DIR   # THORN_SOURCES    (default: /var/cache/thornspkg/sources)
+--build-dir    DIR   # THORN_BUILD      (default: /var/tmp/thornspkg/build)
+--db-dir       DIR   # THORN_DB         (default: /var/lib/thornspkg)
+--root         DIR   # THORN_ROOT       (default: /)
+--prefix       PATH  # THORN_PREFIX     (default: /usr)
+--hooks-dir    DIR   # THORN_HOOKS      (default: /etc/thornspkg/hooks)
+--repos-config FILE  # THORN_REPOS_CONFIG (default: /etc/thornspkg/repos.json)
+-j N                 # THORN_JOBS       (default: nproc)
+```
+
+Variáveis de ambiente podem ser usadas como alternativa às flags — as flags têm prioridade.
+
+---
+
+## Estrutura em disco
+
+```
+/etc/thornspkg/
+    recipes/          ← receitas .toml
+    patches/<pkg>/    ← patches por pacote
+    hooks/
+        pre-install.d/
+        post-install.d/
+        pre-remove.d/
+        post-remove.d/
+    repos.json        ← configuração dos repositórios remotos
+
+/var/cache/thornspkg/sources/     ← tarballs cacheados
+
+/var/tmp/thornspkg/build/
+    <pkg>-<ver>/
+        build.log         ← log completo de build
+        _destdir/         ← staging DESTDIR (apagado após install)
+
+/var/lib/thornspkg/
+    installed.json        ← índice de pacotes instalados
+    transaction.json      ← journal de transação em progresso (temporário)
+    db.lock               ← lock de instância (fcntl.flock)
+    checksums/
+        <pkg>.json        ← sha256 de cada arquivo instalado
+    sync/
+        <repo>.json       ← índices em cache dos repositórios
+    remote-recipes/       ← receitas baixadas de repositórios (temporário)
+```
+
+### Formato do `installed.json`
+
+```json
+{
+  "packages": {
+    "zlib": {
+      "version": "1.3.1",
+      "reason": "explicit",
+      "depends": [],
+      "optional_deps": [],
+      "provides": [],
+      "files": ["usr/lib/libz.so", "usr/include/zlib.h"],
+      "installed_at": "2025-01-15T10:30:00+00:00",
+      "updated_at":   "2025-01-15T10:30:00+00:00",
+      "checked_at":   "2025-01-15T12:00:00+00:00"
+    },
+    "curl": {
+      "reason": "dependency",
+      ...
+    }
+  }
+}
+```
+
+### Formato do `repos.json`
+
+```json
+{
+  "repos": [
+    {"name": "blfs", "url": "https://repo.exemplo.org/blfs/"},
+    {"name": "custom", "url": "https://repo.exemplo.org/custom/"}
+  ]
+}
+```
+
+### Formato do `transaction.json` (journal)
+
+Existe apenas durante uma `thorn install --atomic` em progresso ou após um crash. Contém os arquivos instalados até o momento para possibilitar rollback:
+
+```json
+{
+  "started_at": "2025-01-15T10:00:00+00:00",
+  "packages": [
+    {
+      "name": "zlib", "version": "1.3.1", "reason": "dependency",
+      "files": ["usr/lib/libz.so"],
+      "checksums": {"usr/lib/libz.so": "abc123..."},
+      "recorded_at": "2025-01-15T10:05:00+00:00"
+    }
+  ]
+}
+```
+
+---
+
+## Construindo o sistema base do LFS
+
+```sh
+export LFS=/mnt/lfs
+export THORN_RECIPES=~/blfs-recipes/toolchain
+
+# Fase toolchain (fora do chroot)
+sudo thorn --root "$LFS" install binutils-pass1 gcc-pass1 linux-headers glibc
+
+# Após o chroot (--root / é o default)
+sudo thorn install bash python git
+```
+
+---
+
+## Pipeline de build
+
+O pipeline completo de compilação e instalação de um pacote source segue estas etapas:
+
+```
+1. fetch         — baixa cada source e verifica SHA256
+2. extract       — extrai o tarball com verificação de segurança
+3. extra_sources — copia sources adicionais para o diretório de trabalho
+4. patch         — aplica patches via `patch -p1`
+5. pre_build     — executa hooks shell antes da compilação
+6. build         — resolve e roda os steps de build (configure + make, cmake, meson, etc.)
+7. stage         — roda install_steps com DESTDIR (instalação em staging)
+8. copy          — copia staging → root, grava manifest e checksums
+9. post_install  — executa hooks shell no root real (ldconfig, mandb, etc.)
+```
+
+Para pacotes binários, o pipeline é simplificado:
+
+```
+1. fetch         — baixa o tarball binário
+2. verify        — verifica SHA256 contra o índice do repositório
+3. extract       — extração segura (sem path traversal, sem symlinks perigosos)
+4. copy          — copia para o root, grava manifest e checksums
+5. post_install  — executa hooks globais de instalação
+```
+
+---
+
+## Módulos Python
+
+| módulo | responsabilidade |
+|--------|-----------------|
+| `__init__.py` | versão do pacote e docstring |
+| `__main__.py` | ponto de entrada para `python -m thornspkg` |
+| `config.py` | paths padrão, variáveis de ambiente, struct `Config` |
+| `recipe.py` | leitura e validação de receitas TOML |
+| `depgraph.py` | ordenação topológica, árvore ASCII, reverse deps |
+| `db.py` | banco JSON, reason, orphan detection, `TransactionJournal` |
+| `builder.py` | download, extração segura, patches, build, DESTDIR, remoção |
+| `downloader.py` | download centralizado (curl/urllib), download atômico |
+| `repo.py` | repositórios remotos, índice, cache, busca de pacotes |
+| `lock.py` | lock exclusivo via `fcntl.flock()` |
+| `signature.py` | interface para verificação GPG (placeholder) |
+| `hooks.py` | execução de hooks globais por fase |
+| `suggest.py` | análise estática de configure.ac / meson.build / CMakeLists.txt |
+| `orphan.py` | walk do root com pruning, comparação com manifests |
+| `cli.py` | todos os subcomandos e parser argparse |
+| `colors.py` | saída ANSI colorida sem dependências |

@@ -1,0 +1,11 @@
+name        = "zlib"
+version     = "1.3.1"
+description = "Biblioteca de compressão de uso geral"
+depends     = []
+source      = "https://zlib.net/zlib-1.3.1.tar.gz"
+# sha256 = "preencha com: sha256sum zlib-1.3.1.tar.gz"
+build_system = "autotools"
+
+# Exemplo de como usar [env] para forçar flags de compilação:
+# [env]
+# CFLAGS = "-O2 -pipe"

@@ -1,0 +1,12 @@
+# git demonstra 3 níveis de profundidade de dependências:
+#   git → curl → openssl → zlib
+# Execute `thorn tree git` para ver a árvore completa.
+
+name        = "git"
+version     = "2.45.2"
+description = "Sistema de controle de versão distribuído"
+depends     = ["zlib", "openssl", "curl"]
+source      = "https://www.kernel.org/pub/software/scm/git/git-2.45.2.tar.gz"
+# sha256 = "preencha com: sha256sum git-2.45.2.tar.gz"
+build_system   = "autotools"
+configure_args = ["--with-openssl", "--with-curl", "--without-tcltk"]

@@ -1,0 +1,21 @@
+# python — exemplo de pacote com muitas dependências convergentes.
+# Execute `thorn deps python` para ver a cadeia completa.
+
+name        = "python"
+version     = "3.12.4"
+description = "Linguagem de programação interpretada e de alto nível"
+depends     = ["zlib", "bzip2", "xz", "ncurses", "readline", "openssl", "libffi", "sqlite"]
+source      = "https://www.python.org/ftp/python/3.12.4/Python-3.12.4.tgz"
+# sha256 = "preencha com: sha256sum Python-3.12.4.tgz"
+build_system   = "autotools"
+configure_args = [
+    "--enable-shared",
+    "--with-system-expat",
+    "--enable-optimizations",
+]
+post_install   = ["ldconfig"]
+
+[env]
+# otimizações extras de compilação para Python
+CFLAGS  = "-O3 -pipe"
+LDFLAGS = "-Wl,-O1"

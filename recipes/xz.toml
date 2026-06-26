@@ -1,0 +1,8 @@
+name        = "xz"
+version     = "5.6.2"
+description = "Compressão LZMA/XZ"
+depends     = []
+source      = "https://github.com/tukaani-project/xz/releases/download/v5.6.2/xz-5.6.2.tar.gz"
+# sha256 = "preencha com: sha256sum xz-5.6.2.tar.gz"
+build_system = "autotools"
+configure_args = ["--disable-static"]

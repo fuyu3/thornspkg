@@ -1,0 +1,19 @@
+name        = "bzip2"
+version     = "1.0.8"
+description = "Compressão de alta razão usando algoritmo Burrows-Wheeler"
+depends     = []
+source      = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+# sha256 = "preencha com: sha256sum bzip2-1.0.8.tar.gz"
+
+# bzip2 não tem ./configure — usa Makefile direto, logo build_system="custom"
+build_system = "custom"
+steps = [
+    "make -f Makefile-libbz2_so",
+    "make clean",
+    "make",
+]
+install_steps = [
+    "make install PREFIX=$DESTDIR/usr",
+    "cp -av libbz2.so.1.0.8 $DESTDIR/usr/lib/",
+    "ln -sv libbz2.so.1.0.8 $DESTDIR/usr/lib/libbz2.so",
+]

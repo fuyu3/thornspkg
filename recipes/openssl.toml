@@ -1,0 +1,23 @@
+name         = "openssl"
+version      = "3.3.1"
+description  = "Toolkit de criptografia e protocolo TLS/SSL"
+homepage     = "https://www.openssl.org/"
+license      = "Apache-2.0"
+maintainer   = " OpenSSL Project"
+repository   = "core"
+architecture = "x86_64"
+# Exemplo de depends com operador de versão (v0.4+)
+depends      = ["zlib>=1.2"]
+source       = "https://www.openssl.org/source/openssl-3.3.1.tar.gz"
+# sha256 = "preencha com: sha256sum openssl-3.3.1.tar.gz"
+
+# openssl usa seu próprio script Configure (C maiúsculo), não o autoconf
+build_system = "custom"
+steps = [
+    "./Configure --prefix=/usr --openssldir=/etc/ssl shared zlib-dynamic",
+    "make",
+]
+install_steps = [
+    "make DESTDIR=$DESTDIR MANSUFFIX=ssl install",
+]
+post_install = ["ldconfig"]

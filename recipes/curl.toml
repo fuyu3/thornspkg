@@ -1,0 +1,13 @@
+name        = "curl"
+version     = "8.8.0"
+description = "Ferramenta e biblioteca de transferência de dados por URL"
+homepage    = "https://curl.se/"
+license     = "curl"
+maintainer  = "Daniel Stenberg <daniel@haxx.se>"
+repository  = "core"
+# depends com operadores de versão (v0.4+)
+depends     = ["zlib>=1.2", "openssl>=3.0"]
+source      = "https://curl.se/download/curl-8.8.0.tar.gz"
+# sha256 = "preencha com: sha256sum curl-8.8.0.tar.gz"
+build_system   = "autotools"
+configure_args = ["--with-openssl", "--disable-static", "--enable-versioned-symbols"]
