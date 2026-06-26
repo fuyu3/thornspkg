@@ -32,7 +32,7 @@ O comando `thorn self-update` faz tudo de forma autônoma:
 Configuração do repositório GitHub
 -----------------------------------
 Por padrão, consulta:
-  https://api.github.com/repos/thornspkg/thornspkg/releases/latest
+  https://api.github.com/repos/fuyu3/thornspkg/releases/latest
 
 Você pode sobrescrever o owner/repo via variável de ambiente
 THORN_SELFUPDATE_REPO (formato "owner/repo") ou pela flag --repo.
@@ -192,7 +192,7 @@ def fetch_release(
     """Consulta o GitHub Releases API para um release.
 
     Args:
-        repo: "owner/repo" (ex: "thornspkg/thornspkg")
+        repo: "owner/repo" (ex: "fuyu3/thornspkg")
         tag:  se None, busca o release mais recente;
               senão, busca a tag específica (sem prefixo 'v').
 

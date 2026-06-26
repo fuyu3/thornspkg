@@ -41,7 +41,7 @@ faz uma requisição HTTP para:
 GET https://api.github.com/repos/<OWNER>/<REPO>/releases/latest
 ```
 
-Por padrão, `<OWNER>/<REPO>` é `thornspkg/thornspkg` (constante
+Por padrão, `<OWNER>/<REPO>` é `fuyu3/thornspkg` (constante
 `DEFAULT_GITHUB_REPO` em `selfupdate.py`). Você pode mudar isso via:
 
 - **Variável de ambiente** `THORN_SELFUPDATE_REPO=seu-usuario/thornspkg`
