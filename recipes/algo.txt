@@ -1,5 +1,0 @@
-fasfetch
-duktape 2.7.0
-docutils 0.23
-icu4c 78.3 *
-libxml2 2.15.3 *
