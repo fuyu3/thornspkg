@@ -85,62 +85,111 @@ def confirm(prompt: str, default: bool = True, yes: bool = False) -> bool:
 # resolução de ordem de instalação
 # ---------------------------------------------------------------------------
 
+def _fetch_repo_recipe(name: str, cfg) -> Recipe | None:
+    """Busca um pacote nos repositórios e cria uma Recipe virtual.
+
+    Retorna None se o pacote não estiver em nenhum repositório.
+    """
+    repo_pkg = find_package_in_repos(name, cfg.db_dir, cfg.repos_config)
+    if repo_pkg is None:
+        return None
+    return Recipe(
+        name=name,
+        version=repo_pkg.version,
+        path=Path(f"repo:{name}"),
+        depends=list(repo_pkg.depends),
+    )
+
+
+def _fetch_all_repo_recipes(
+    targets: list[str],
+    local_recipes: dict,
+    pmap: dict,
+    cfg,
+) -> dict[str, Recipe]:
+    """Busca recursivamente todas as receitas necessárias nos repositórios.
+
+    Para cada target e suas dependências transitivas, se a receita não existe
+    localmente, busca no repositório e adiciona ao dict de receitas virtuais.
+
+    Args:
+        targets:        lista de specs de pacotes (ex: ["bar", "foo>=1.0"])
+        local_recipes:  receitas locais já carregadas
+        pmap:           mapa de provides
+        cfg:            configuração
+
+    Returns:
+        Dict com todas as receitas (locais + virtuais do repositório).
+    """
+    virtual = dict(local_recipes)
+    # Fila de nomes base a buscar (sem operador de versão)
+    to_check: list[str] = []
+    seen: set[str] = set()
+
+    for spec in targets:
+        try:
+            base = dep_name(spec)
+        except VersionError:
+            base = spec
+        to_check.append(base)
+
+    while to_check:
+        name = to_check.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+
+        # Resolve provides
+        real = pmap.get(name, name)
+
+        # Se já temos localmente, usa e explora suas deps
+        if real in virtual:
+            for dep in virtual[real].depends:
+                try:
+                    dep_base = dep_name(dep)
+                except VersionError:
+                    dep_base = dep
+                if dep_base not in seen:
+                    to_check.append(dep_base)
+            continue
+
+        # Senão, tenta buscar no repositório
+        recipe = _fetch_repo_recipe(real, cfg)
+        if recipe is not None:
+            virtual[real] = recipe
+            # Adiciona as deps à fila para busca recursiva
+            for dep in recipe.depends:
+                try:
+                    dep_base = dep_name(dep)
+                except VersionError:
+                    dep_base = dep
+                if dep_base not in seen:
+                    to_check.append(dep_base)
+
+    return virtual
+
+
 def resolve_install_order(args, recipes, pmap, inst, cfg, inst_versions=None):
     """Resolve a ordem de instalação, considerando receitas locais e pacotes
-    de repositório. Tenta receitas locais primeiro; se falhar, cria receitas
-    virtuais para pacotes que existem em repositórios e tenta de novo.
+    de repositório.
+
+    Estratégia:
+      1. Busca recursivamente todas as receitas necessárias (locais + repo)
+      2. Resolve a ordem com resolve_order()
 
     Retorna lista linearizada ou None em caso de erro (mensagem já impressa).
     """
     try:
+        all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
         return resolve_order(
-            recipes, args.packages, pmap, inst,
-            installed_versions=inst_versions,
-        )
-    except (DependencyCycleError, MissingDependencyError, VersionConflictError) as e:
-        # Tenta resolver via repositórios antes de desistir
-        pass
-    except Exception as e:
-        err(f"erro inesperado ao resolver dependências: {e}")
-        return None
-
-    # Fallback: pacotes faltantes talvez estejam em repositórios
-    try:
-        missing = []
-        for pkg_name in args.packages:
-            try:
-                base = dep_name(pkg_name)
-            except VersionError:
-                base = pkg_name
-            real = pmap.get(base, base)
-            if real not in recipes:
-                missing.append(pkg_name)
-
-        virtual_recipes = dict(recipes)
-        for pkg_name in missing:
-            try:
-                base = dep_name(pkg_name)
-            except VersionError:
-                base = pkg_name
-            repo_pkg = find_package_in_repos(base, cfg.db_dir, cfg.repos_config)
-            if repo_pkg is not None:
-                virtual = Recipe(
-                    name=base,
-                    version=repo_pkg.version,
-                    path=Path(f"repo:{base}"),
-                    depends=repo_pkg.depends,
-                )
-                virtual_recipes[base] = virtual
-
-        return resolve_order(
-            virtual_recipes, args.packages, pmap, inst,
+            all_recipes, args.packages, pmap, inst,
             installed_versions=inst_versions,
         )
     except (DependencyCycleError, MissingDependencyError, VersionConflictError) as e:
         err(str(e))
         return None
     except Exception as e:
-        err(f"erro inesperado ao resolver via repositórios: {e}")
+        err(f"erro inesperado ao resolver dependências: {e}")
         return None
 
 

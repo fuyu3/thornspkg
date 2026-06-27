@@ -32,14 +32,14 @@ from .common import err, resolve_install_order, warn
 
 def cmd_deps(args, recipes, pmap, cfg) -> int:
     """Mostra a ordem de instalação sem compilar nada."""
+    from .common import _fetch_all_repo_recipes, build_installed_versions
+
     db = dbmod.load_db(cfg.db_dir)
     inst = set(db["packages"])
+    inst_ver = build_installed_versions(db)
 
-    # Constrói {nome: versão} dos instalados para verificação de constraints
-    inst_ver = {
-        name: info.get("version", "0")
-        for name, info in db["packages"].items()
-    }
+    # Busca receitas remotas para que deps funcione com pacotes do repo
+    all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
 
     order = resolve_install_order(args, recipes, pmap, inst, cfg, inst_ver)
     if order is None:
@@ -47,7 +47,7 @@ def cmd_deps(args, recipes, pmap, cfg) -> int:
 
     print(c("Ordem de build/instalação:", "bold"))
     for i, name in enumerate(order, 1):
-        r = recipes.get(name)
+        r = all_recipes.get(name)
         if dbmod.is_installed(db, name):
             ver_i = db["packages"][name]["version"]
             stale = c(f" ↑ {ver_i}", "dim") if r and ver_i != r.version else ""
@@ -65,20 +65,24 @@ def cmd_deps(args, recipes, pmap, cfg) -> int:
 
 def cmd_tree(args, recipes, pmap, cfg) -> int:
     """Exibe a árvore de dependências de um ou mais pacotes."""
+    # Busca receitas remotas para que o tree funcione com pacotes do repo
+    from .common import _fetch_all_repo_recipes
+    all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
+
     for target in args.packages:
         try:
             base = dep_name(target)
         except VersionError:
             base = target
         real = pmap.get(base, base)
-        if real not in recipes:
+        if real not in all_recipes:
             return err(f"pacote desconhecido: '{target}'")
-        r = recipes[real]
+        r = all_recipes[real]
         print(c(f"{r.name} {r.version}", "bold"))
         seen: set[str] = {real}
         for i, dep in enumerate(r.depends):
             is_last = i == len(r.depends) - 1
-            for line in dep_tree_lines(recipes, dep, pmap, seen, "", is_last):
+            for line in dep_tree_lines(all_recipes, dep, pmap, seen, "", is_last):
                 print(line)
     return 0
 
