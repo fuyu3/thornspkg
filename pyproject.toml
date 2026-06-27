@@ -1,6 +1,6 @@
 [project]
 name = "thornspkg"
-version = "0.4.4"
+version = "0.4.5"
 description = "Gerenciador de pacotes source-based com resolução de dependências para LFS/BLFS"
 requires-python = ">=3.9"
 readme = "README.md"
