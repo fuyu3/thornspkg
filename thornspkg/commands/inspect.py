@@ -41,7 +41,7 @@ def cmd_deps(args, recipes, pmap, cfg) -> int:
     # Busca receitas remotas para que deps funcione com pacotes do repo
     all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
 
-    order = resolve_install_order(args, recipes, pmap, inst, cfg, inst_ver)
+    order, _ = resolve_install_order(args, recipes, pmap, inst, cfg, inst_ver)
     if order is None:
         return 1
 

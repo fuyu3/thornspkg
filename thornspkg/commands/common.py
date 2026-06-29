@@ -120,6 +120,25 @@ def _load_remote_recipe(name: str, cfg) -> Recipe | None:
         Recipe completa, ou None se não foi possível baixar/carregar.
     """
     cache_dir = cfg.db_dir / "remote-recipes"
+
+    # Verifica primeiro se o pacote está no índice e é type="recipe"
+    repo_pkg = find_package_in_repos(name, cfg.db_dir, cfg.repos_config)
+    if repo_pkg is None:
+        warn(f"'{name}': pacote não encontrado em nenhum repositório")
+        return None
+    if repo_pkg.pkg_type != "recipe":
+        warn(
+            f"'{name}': tipo no índice é '{repo_pkg.pkg_type}', "
+            f"esperado 'recipe' para baixar .toml"
+        )
+        return None
+    if not repo_pkg.recipe:
+        warn(
+            f"'{name}': entrada type='recipe' sem campo 'recipe' "
+            f"(URL relativa do .toml) no index.json"
+        )
+        return None
+
     try:
         recipe_path = download_remote_recipe(
             name, cfg.db_dir, cfg.repos_config, cache_dir
@@ -129,13 +148,14 @@ def _load_remote_recipe(name: str, cfg) -> Recipe | None:
         return None
 
     if recipe_path is None:
+        warn(f"'{name}': download_remote_recipe retornou None (inesperado)")
         return None
 
     print(c(f"  ↓  receita remota: {recipe_path.name}", "cyan"))
     try:
         return load_recipe(recipe_path)
     except RecipeError as e:
-        warn(f"receita remota de '{name}' inválida: {e}")
+        warn(f"receita remota de '{name}' ({recipe_path}) inválida: {e}")
         return None
 
 
@@ -250,20 +270,26 @@ def resolve_install_order(args, recipes, pmap, inst, cfg, inst_versions=None):
       1. Busca recursivamente todas as receitas necessárias (locais + repo)
       2. Resolve a ordem com resolve_order()
 
-    Retorna lista linearizada ou None em caso de erro (mensagem já impressa).
+    Retorna tuple (order, all_recipes) onde:
+      - order: lista linearizada de nomes de pacotes a instalar
+      - all_recipes: dict {nome: Recipe} que inclui receitas locais + remotas
+        baixadas durante a resolução (com sources, build_system, etc.)
+
+    Retorna (None, None) em caso de erro (mensagem já impressa).
     """
     try:
         all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
-        return resolve_order(
+        order = resolve_order(
             all_recipes, args.packages, pmap, inst,
             installed_versions=inst_versions,
         )
+        return order, all_recipes
     except (DependencyCycleError, MissingDependencyError, VersionConflictError) as e:
         err(str(e))
-        return None
+        return None, None
     except Exception as e:
         err(f"erro inesperado ao resolver dependências: {e}")
-        return None
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -496,10 +522,27 @@ def install_one_package(
                 jobs=args.jobs, keep_build=args.keep_build,
                 current=current, total=total,
             )
-        raise bld.BuildError(
-            f"não foi possível carregar a receita remota de '{name}' "
-            f"(verifique se o arquivo .toml existe no repositório)"
+        # Diagnóstico detalhado quando a receita remota não pôde ser carregada
+        diag_lines = [
+            f"não foi possível carregar a receita remota de '{name}'",
+            f"  type no index.json: {repo_pkg.pkg_type}",
+            f"  recipe field:       {repo_pkg.recipe!r}",
+            f"  sha256 field:       {repo_pkg.sha256!r}",
+            f"  cache dir:          {cfg.db_dir / 'remote-recipes'}",
+        ]
+        if recipe is None:
+            diag_lines.append("  motivo: _load_remote_recipe() retornou None")
+        elif is_virtual:
+            diag_lines.append(
+                "  motivo: receita continua virtual após tentativa de download"
+            )
+        diag_lines.append(
+            "  verifique: "
+            "(1) se o arquivo .toml existe em <repo_url>/<recipe_field>, "
+            "(2) se o SHA256 no index.json está correto, "
+            "(3) se o servidor está acessível."
         )
+        raise bld.BuildError("\n".join(diag_lines))
 
     raise bld.BuildError(f"não foi possível determinar como instalar '{name}'")
 

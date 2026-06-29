@@ -152,9 +152,11 @@ def cmd_upgrade(args, recipes, pmap, cfg) -> int:
     # Cria args-like para resolve_install_order
     class _Args:
         packages = targets
-    order = resolve_install_order(_Args, recipes, pmap, inst, cfg, inst_ver)
+    order, all_recipes = resolve_install_order(_Args, recipes, pmap, inst, cfg, inst_ver)
     if order is None:
         return 1
+    # Usa all_recipes (inclui receitas remotas baixadas durante resolução)
+    recipes = all_recipes
 
     # Filtra apenas os que precisam de atualização (ou não estão instalados)
     todo: list[str] = []
