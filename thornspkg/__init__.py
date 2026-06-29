@@ -21,4 +21,4 @@ Suporta:
   - Comandos sync, upgrade, list-upgrades, cache — v0.4+
 """
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"

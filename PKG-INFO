@@ -1,3 +1,12 @@
+Metadata-Version: 2.4
+Name: thornspkg
+Version: 0.4.5
+Summary: Gerenciador de pacotes source-based com resolução de dependências para LFS/BLFS
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: tomli; python_version < "3.11"
+
 # thornspkg · `thorn`
 
 Gerenciador de pacotes **source-based** para [Linux From Scratch](https://www.linuxfromscratch.org/) e BLFS. Compila do zero, resolve dependências automaticamente e rastreia cada arquivo instalado para remoção limpa posterior. Suporta também **pacotes binários** e **receitas remotas** via repositórios. Sem dependências externas em Python ≥ 3.11.
