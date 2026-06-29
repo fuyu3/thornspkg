@@ -313,10 +313,36 @@ def _copy_symlink(src: Path, dst: Path) -> None:
 
 
 def install_from_staging(staging: Path, dest_root: Path) -> tuple[list[str], dict[str, str]]:
-    """Copia staging → dest_root. Retorna (manifest, checksums)."""
+    """Copia staging → dest_root. Retorna (manifest, checksums).
+
+    Arquivos de índice compartilhado (que múltiplos pacotes podem regenerar)
+    são filtrados do manifesto para evitar falsos conflitos:
+      - /usr/share/info/dir       — índice de info pages (install-info)
+      - /usr/share/man/.../whatis  — índice do mandb (raro, mas pode ocorrer)
+      - /usr/lib/python*/__pycache__/*.pyc  — cache bytecode (regenerado)
+
+    Esses arquivos ainda são copiados para o root (se existirem no staging),
+    mas não são "propriedade" de nenhum pacote específico — qualquer pacote
+    pode regenerá-los a qualquer momento.
+    """
     dest_root.mkdir(parents=True, exist_ok=True)
     manifest: list[str] = []
     checksums: dict[str, str] = {}
+
+    # Padrões de arquivos compartilhados que NÃO devem ser rastreados no
+    # manifesto (causam conflitos entre pacotes que os regeneram).
+    SHARED_INDEX_PATTERNS = [
+        "usr/share/info/dir",         # install-info regenera
+        "usr/share/info/dir.gz",      # versão comprimida
+        "usr/share/info/dir.bz2",
+        "usr/share/info/dir.xz",
+    ]
+
+    def is_shared_index(rel_path: str) -> bool:
+        """Verifica se o arquivo é um índice compartilhado."""
+        # Normaliza: remove leading / se existir
+        normalized = rel_path.lstrip("/")
+        return normalized in SHARED_INDEX_PATTERNS
 
     for dirpath, dirnames, filenames in os.walk(staging, followlinks=False):
         rel_dir = Path(dirpath).relative_to(staging)
@@ -336,13 +362,20 @@ def install_from_staging(staging: Path, dest_root: Path) -> tuple[list[str], dic
         for fname in filenames:
             src = Path(dirpath) / fname
             rel = str(rel_dir / fname)
+            # Copia o arquivo para o root (mesmo se for índice compartilhado,
+            # para não perder dados), mas não registra no manifesto se for.
             dst = dest_root / rel
             if src.is_symlink():
                 _copy_symlink(src, dst)
             else:
                 shutil.copy2(src, dst)
                 checksums[rel] = sha256_file(dst)
-            manifest.append(rel)
+            # Filtra índices compartilhados do manifesto
+            if not is_shared_index(rel):
+                manifest.append(rel)
+            # Remove também do checksums se for índice compartilhado
+            if is_shared_index(rel) and rel in checksums:
+                del checksums[rel]
 
     return manifest, checksums
 
@@ -376,7 +409,49 @@ def compute_download_size(archive_path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
+    """Remove os arquivos do manifesto do root.
+
+    Antes de remover arquivos `.info`, executa `install-info --remove`
+    para limpar a entrada correspondente do índice compartilhado
+    /usr/share/info/dir. Isso evita que o índice fique com entradas órfãs
+    apontando para páginas info que foram removidas.
+
+    Após remover todos os arquivos, limpa diretórios vazios de baixo pra cima.
+    """
     removed = skipped = 0
+
+    # --- 1. Antes de remover .info files, limpa entradas do índice ---
+    # Arquivos .info em /usr/share/info/ (excluindo o próprio `dir` que é o índice)
+    info_files_to_clean = []
+    for rel in files:
+        normalized = rel.lstrip("/")
+        if (normalized.startswith("usr/share/info/")
+                and normalized.endswith(".info")
+                and normalized != "usr/share/info/dir"):
+            info_files_to_clean.append(normalized)
+
+    if info_files_to_clean:
+        info_dir_path = root_dir / "usr" / "share" / "info" / "dir"
+        if info_dir_path.exists():
+            for info_file in info_files_to_clean:
+                # Tenta rodar install-info --remove --info-dir=<dir> <arquivo>
+                # O --info-dir é necessário porque o install-info procura em
+                # /usr/share/info/dir por padrão, mas pode estar em root_dir
+                full_info_path = root_dir / info_file
+                if full_info_path.exists():
+                    try:
+                        subprocess.run(
+                            ["install-info", "--remove",
+                             f"--info-dir={info_dir_path}",
+                             str(full_info_path)],
+                            capture_output=True, timeout=10,
+                            check=False,  # não falha se install-info não existir
+                        )
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        # install-info não está instalado ou travou — ignora
+                        pass
+
+    # --- 2. Remove os arquivos do manifesto ---
     for rel in files:
         p = root_dir / rel
         try:
@@ -391,7 +466,7 @@ def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
         except (FileNotFoundError, OSError):
             skipped += 1
 
-    # limpar diretórios vazios de baixo pra cima
+    # --- 3. Limpa diretórios vazios de baixo pra cima ---
     parents = sorted(
         {(root_dir / rel).parent for rel in files},
         key=lambda p: len(str(p)), reverse=True,
@@ -403,6 +478,21 @@ def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
             except OSError:
                 break
             parent = parent.parent
+
+    # --- 4. Remove o info/dir se ficou vazio (após limpeza) ---
+    # Se o diretório /usr/share/info/ ficou sem nenhum .info, remove o dir também
+    info_dir_path = root_dir / "usr" / "share" / "info" / "dir"
+    if info_dir_path.exists():
+        info_dir_parent = info_dir_path.parent
+        try:
+            # Se o dir está vazio ou só tem entradas comentadas, remove
+            content = info_dir_path.read_text().strip()
+            # Índice vazio ou só com comentários — remove
+            lines = [l for l in content.split("\n") if l.strip() and not l.startswith("*")]
+            if not lines and not any(l.startswith("*") for l in content.split("\n")):
+                info_dir_path.unlink()
+        except (OSError, UnicodeDecodeError):
+            pass
 
     return removed, skipped
 

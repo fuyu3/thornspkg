@@ -33,10 +33,9 @@ from ..depgraph import (
 from ..downloader import DownloadError
 from ..fileconflict import FileConflictError, assert_no_conflicts, build_file_index
 from ..hooks import HookError, run_global_hooks
-from ..recipe import Recipe, RecipeError, build_provides_map, load_recipe
+from ..recipe import Recipe, RecipeError, build_provides_map
 from ..repo import (
     RepoError,
-    download_remote_recipe,
     find_package_in_repos,
     load_cached_index,
     load_repos_config,
@@ -90,11 +89,6 @@ def _fetch_repo_recipe(name: str, cfg) -> Recipe | None:
     """Busca um pacote nos repositórios e cria uma Recipe virtual.
 
     Retorna None se o pacote não estiver em nenhum repositório.
-
-    A Recipe virtual tem apenas name/version/depends (sem sources/build_system)
-    — é usada só para resolver a árvore de dependências. A receita completa
-    (.toml com sources, build_system, etc.) é baixada depois por
-    _load_remote_recipe() no momento do build.
     """
     repo_pkg = find_package_in_repos(name, cfg.db_dir, cfg.repos_config)
     if repo_pkg is None:
@@ -107,58 +101,6 @@ def _fetch_repo_recipe(name: str, cfg) -> Recipe | None:
     )
 
 
-def _load_remote_recipe(name: str, cfg) -> Recipe | None:
-    """Baixa a receita .toml remota e a carrega como Recipe completa.
-
-    Usado quando install_one_package() detecta uma receita virtual (criada
-    por _fetch_repo_recipe para resolver deps) e precisa da receita real
-    com sources/build_system/steps para efetivamente compilar.
-
-    A receita é cacheada em <db_dir>/remote-recipes/ para reuso.
-
-    Returns:
-        Recipe completa, ou None se não foi possível baixar/carregar.
-    """
-    cache_dir = cfg.db_dir / "remote-recipes"
-
-    # Verifica primeiro se o pacote está no índice e é type="recipe"
-    repo_pkg = find_package_in_repos(name, cfg.db_dir, cfg.repos_config)
-    if repo_pkg is None:
-        warn(f"'{name}': pacote não encontrado em nenhum repositório")
-        return None
-    if repo_pkg.pkg_type != "recipe":
-        warn(
-            f"'{name}': tipo no índice é '{repo_pkg.pkg_type}', "
-            f"esperado 'recipe' para baixar .toml"
-        )
-        return None
-    if not repo_pkg.recipe:
-        warn(
-            f"'{name}': entrada type='recipe' sem campo 'recipe' "
-            f"(URL relativa do .toml) no index.json"
-        )
-        return None
-
-    try:
-        recipe_path = download_remote_recipe(
-            name, cfg.db_dir, cfg.repos_config, cache_dir
-        )
-    except RepoError as e:
-        warn(f"falha ao baixar receita remota de '{name}': {e}")
-        return None
-
-    if recipe_path is None:
-        warn(f"'{name}': download_remote_recipe retornou None (inesperado)")
-        return None
-
-    print(c(f"  ↓  receita remota: {recipe_path.name}", "cyan"))
-    try:
-        return load_recipe(recipe_path)
-    except RecipeError as e:
-        warn(f"receita remota de '{name}' ({recipe_path}) inválida: {e}")
-        return None
-
-
 def _fetch_all_repo_recipes(
     targets: list[str],
     local_recipes: dict,
@@ -168,10 +110,7 @@ def _fetch_all_repo_recipes(
     """Busca recursivamente todas as receitas necessárias nos repositórios.
 
     Para cada target e suas dependências transitivas, se a receita não existe
-    localmente, busca no repositório. Para pacotes do tipo "recipe", baixa o
-    .toml real (via _load_remote_recipe) e usa suas depends + optional_deps
-    para resolver a árvore completa. Para pacotes do tipo "binary", usa apenas
-    as depends declaradas no index.json.
+    localmente, busca no repositório e adiciona ao dict de receitas virtuais.
 
     Args:
         targets:        lista de specs de pacotes (ex: ["bar", "foo>=1.0"])
@@ -180,7 +119,7 @@ def _fetch_all_repo_recipes(
         cfg:            configuração
 
     Returns:
-        Dict com todas as receitas (locais + reais/virtuais do repositório).
+        Dict com todas as receitas (locais + virtuais do repositório).
     """
     virtual = dict(local_recipes)
     # Fila de nomes base a buscar (sem operador de versão)
@@ -214,50 +153,18 @@ def _fetch_all_repo_recipes(
                     to_check.append(dep_base)
             continue
 
-        # Senão, verifica se está no repositório
-        repo_pkg = find_package_in_repos(real, cfg.db_dir, cfg.repos_config)
-        if repo_pkg is None:
-            continue  # deixa resolve_order() reclamar de missing dep
-
-        if repo_pkg.pkg_type == "recipe":
-            # Baixa a receita .toml real (com sources, build_system, etc.)
-            # — assim temos acesso a depends + optional_deps completas.
-            # A receita é cacheada em <db_dir>/remote-recipes/.
-            real_recipe = _load_remote_recipe(real, cfg)
-            if real_recipe is not None:
-                virtual[real] = real_recipe
-                # Adiciona depends + optional_deps à fila para busca recursiva
-                for dep in list(real_recipe.depends) + list(real_recipe.optional_deps):
-                    try:
-                        dep_base = dep_name(dep)
-                    except VersionError:
-                        dep_base = dep
-                    if dep_base not in seen:
-                        to_check.append(dep_base)
-            else:
-                # Fallback: usa apenas as depends do index.json
-                recipe = _fetch_repo_recipe(real, cfg)
-                if recipe is not None:
-                    virtual[real] = recipe
-                    for dep in recipe.depends:
-                        try:
-                            dep_base = dep_name(dep)
-                        except VersionError:
-                            dep_base = dep
-                        if dep_base not in seen:
-                            to_check.append(dep_base)
-        else:
-            # binary: usa apenas depends do index.json (não há .toml)
-            recipe = _fetch_repo_recipe(real, cfg)
-            if recipe is not None:
-                virtual[real] = recipe
-                for dep in recipe.depends:
-                    try:
-                        dep_base = dep_name(dep)
-                    except VersionError:
-                        dep_base = dep
-                    if dep_base not in seen:
-                        to_check.append(dep_base)
+        # Senão, tenta buscar no repositório
+        recipe = _fetch_repo_recipe(real, cfg)
+        if recipe is not None:
+            virtual[real] = recipe
+            # Adiciona as deps à fila para busca recursiva
+            for dep in recipe.depends:
+                try:
+                    dep_base = dep_name(dep)
+                except VersionError:
+                    dep_base = dep
+                if dep_base not in seen:
+                    to_check.append(dep_base)
 
     return virtual
 
@@ -270,26 +177,20 @@ def resolve_install_order(args, recipes, pmap, inst, cfg, inst_versions=None):
       1. Busca recursivamente todas as receitas necessárias (locais + repo)
       2. Resolve a ordem com resolve_order()
 
-    Retorna tuple (order, all_recipes) onde:
-      - order: lista linearizada de nomes de pacotes a instalar
-      - all_recipes: dict {nome: Recipe} que inclui receitas locais + remotas
-        baixadas durante a resolução (com sources, build_system, etc.)
-
-    Retorna (None, None) em caso de erro (mensagem já impressa).
+    Retorna lista linearizada ou None em caso de erro (mensagem já impressa).
     """
     try:
         all_recipes = _fetch_all_repo_recipes(args.packages, recipes, pmap, cfg)
-        order = resolve_order(
+        return resolve_order(
             all_recipes, args.packages, pmap, inst,
             installed_versions=inst_versions,
         )
-        return order, all_recipes
     except (DependencyCycleError, MissingDependencyError, VersionConflictError) as e:
         err(str(e))
-        return None, None
+        return None
     except Exception as e:
         err(f"erro inesperado ao resolver dependências: {e}")
-        return None, None
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +355,6 @@ def install_one_package(
     Prioridade (padrão): binário > receita local > receita remota
     Com --prefer-source: receita local > binário > receita remota
 
-    Receitas remotas (type="recipe" no index.json do repositório) são baixadas
-    em <db_dir>/remote-recipes/ e cacheadas para reuso. O SHA256 declarado no
-    índice é verificado após o download.
-
     Realiza detecção de conflitos de arquivos ANTES de instalar.
     """
     prefer_source = getattr(args, 'prefer_source', False)
@@ -465,24 +362,9 @@ def install_one_package(
     recipe = recipes.get(name)
     repo_pkg = find_package_in_repos(name, cfg.db_dir, cfg.repos_config)
 
-    # Detecta receita virtual (criada pelo resolver para dep resolution).
-    # Receitas virtuais têm path="repo:<name>" e não têm sources/build_system.
-    # Se o pacote está no repo como type="recipe", baixamos o .toml real agora.
-    is_virtual = (
-        recipe is not None
-        and not recipe.sources
-        and str(recipe.path).startswith("repo:")
-    )
-    if is_virtual and repo_pkg is not None and repo_pkg.pkg_type == "recipe":
-        real_recipe = _load_remote_recipe(name, cfg)
-        if real_recipe is not None:
-            recipe = real_recipe
-            recipes[name] = real_recipe  # substitui no dict para reuso
-            is_virtual = False
-
     # Determina o modo de instalação
     if prefer_source:
-        if recipe is not None and not is_virtual:
+        if recipe is not None:
             return build_one(
                 name, recipe, cfg,
                 jobs=args.jobs, keep_build=args.keep_build,
@@ -506,43 +388,22 @@ def install_one_package(
                 cfg, current=current, total=total,
                 repository=repo_pkg.name,
             )
-        if recipe is not None and not is_virtual:
+        if recipe is not None:
             return build_one(
                 name, recipe, cfg,
                 jobs=args.jobs, keep_build=args.keep_build,
                 current=current, total=total,
             )
 
-    # Fallback: receita do repositório remoto (type="recipe")
-    # Já tentamos baixar acima; se chegamos aqui com receita real, builda.
+    # Fallback: receita do repositório remoto
     if repo_pkg is not None and repo_pkg.pkg_type == "recipe":
-        if recipe is not None and not is_virtual:
+        warn(f"'{name}': receita remota não implementada, tentando receita local")
+        if recipe is not None:
             return build_one(
                 name, recipe, cfg,
                 jobs=args.jobs, keep_build=args.keep_build,
                 current=current, total=total,
             )
-        # Diagnóstico detalhado quando a receita remota não pôde ser carregada
-        diag_lines = [
-            f"não foi possível carregar a receita remota de '{name}'",
-            f"  type no index.json: {repo_pkg.pkg_type}",
-            f"  recipe field:       {repo_pkg.recipe!r}",
-            f"  sha256 field:       {repo_pkg.sha256!r}",
-            f"  cache dir:          {cfg.db_dir / 'remote-recipes'}",
-        ]
-        if recipe is None:
-            diag_lines.append("  motivo: _load_remote_recipe() retornou None")
-        elif is_virtual:
-            diag_lines.append(
-                "  motivo: receita continua virtual após tentativa de download"
-            )
-        diag_lines.append(
-            "  verifique: "
-            "(1) se o arquivo .toml existe em <repo_url>/<recipe_field>, "
-            "(2) se o SHA256 no index.json está correto, "
-            "(3) se o servidor está acessível."
-        )
-        raise bld.BuildError("\n".join(diag_lines))
 
     raise bld.BuildError(f"não foi possível determinar como instalar '{name}'")
 
