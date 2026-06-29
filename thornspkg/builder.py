@@ -318,12 +318,14 @@ def install_from_staging(staging: Path, dest_root: Path) -> tuple[list[str], dic
     Arquivos de índice compartilhado (que múltiplos pacotes podem regenerar)
     são filtrados do manifesto para evitar falsos conflitos:
       - /usr/share/info/dir       — índice de info pages (install-info)
-      - /usr/share/man/.../whatis  — índice do mandb (raro, mas pode ocorrer)
-      - /usr/lib/python*/__pycache__/*.pyc  — cache bytecode (regenerado)
+      - /usr/share/info/dir.gz    — versão comprimida
+      - /usr/share/info/dir.bz2
+      - /usr/share/info/dir.xz
 
     Esses arquivos ainda são copiados para o root (se existirem no staging),
     mas não são "propriedade" de nenhum pacote específico — qualquer pacote
-    pode regenerá-los a qualquer momento.
+    pode regenerá-los a qualquer momento. Isso evita que o thornspkg reclame
+    de "conflito de arquivos" entre pacotes que ambos regeneram o índice.
     """
     dest_root.mkdir(parents=True, exist_ok=True)
     manifest: list[str] = []
@@ -332,15 +334,14 @@ def install_from_staging(staging: Path, dest_root: Path) -> tuple[list[str], dic
     # Padrões de arquivos compartilhados que NÃO devem ser rastreados no
     # manifesto (causam conflitos entre pacotes que os regeneram).
     SHARED_INDEX_PATTERNS = [
-        "usr/share/info/dir",         # install-info regenera
-        "usr/share/info/dir.gz",      # versão comprimida
+        "usr/share/info/dir",
+        "usr/share/info/dir.gz",
         "usr/share/info/dir.bz2",
         "usr/share/info/dir.xz",
     ]
 
     def is_shared_index(rel_path: str) -> bool:
         """Verifica se o arquivo é um índice compartilhado."""
-        # Normaliza: remove leading / se existir
         normalized = rel_path.lstrip("/")
         return normalized in SHARED_INDEX_PATTERNS
 
@@ -417,6 +418,7 @@ def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
     apontando para páginas info que foram removidas.
 
     Após remover todos os arquivos, limpa diretórios vazios de baixo pra cima.
+    Se o /usr/share/info/dir ficar vazio (sem entradas), também é removido.
     """
     removed = skipped = 0
 
@@ -435,8 +437,6 @@ def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
         if info_dir_path.exists():
             for info_file in info_files_to_clean:
                 # Tenta rodar install-info --remove --info-dir=<dir> <arquivo>
-                # O --info-dir é necessário porque o install-info procura em
-                # /usr/share/info/dir por padrão, mas pode estar em root_dir
                 full_info_path = root_dir / info_file
                 if full_info_path.exists():
                     try:
@@ -483,13 +483,11 @@ def remove_installed_files(root_dir: Path, files: list[str]) -> tuple[int, int]:
     # Se o diretório /usr/share/info/ ficou sem nenhum .info, remove o dir também
     info_dir_path = root_dir / "usr" / "share" / "info" / "dir"
     if info_dir_path.exists():
-        info_dir_parent = info_dir_path.parent
         try:
-            # Se o dir está vazio ou só tem entradas comentadas, remove
+            # Se o dir está vazio ou só tem comentários (sem entradas `*`), remove
             content = info_dir_path.read_text().strip()
-            # Índice vazio ou só com comentários — remove
-            lines = [l for l in content.split("\n") if l.strip() and not l.startswith("*")]
-            if not lines and not any(l.startswith("*") for l in content.split("\n")):
+            has_entries = any(l.startswith("*") for l in content.split("\n"))
+            if not has_entries:
                 info_dir_path.unlink()
         except (OSError, UnicodeDecodeError):
             pass

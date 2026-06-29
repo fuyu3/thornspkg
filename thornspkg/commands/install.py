@@ -52,9 +52,12 @@ def cmd_install(args, recipes, pmap, cfg) -> int:
             return 1
 
     # Resolve dependências
-    order = resolve_install_order(args, recipes, pmap, inst, cfg, inst_ver)
+    order, all_recipes = resolve_install_order(args, recipes, pmap, inst, cfg, inst_ver)
     if order is None:
         return 1
+    # Usa all_recipes (inclui receitas remotas baixadas durante resolução)
+    # em vez do dict `recipes` original (que só tem receitas locais)
+    recipes = all_recipes
 
     # Determina quais são explícitos (argumentos diretos) vs dependências
     explicit_set: set[str] = set()

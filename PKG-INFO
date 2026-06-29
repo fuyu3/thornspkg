@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: thornspkg
-Version: 0.4.5
+Version: 0.4.7
 Summary: Gerenciador de pacotes source-based com resolução de dependências para LFS/BLFS
 License: MIT
 Requires-Python: >=3.9
